@@ -71,6 +71,10 @@ build:
 	@$(call print, "Compiling btcwallet.")
 	$(GOBUILD) $(PKG)/...
 
+wasm-build:
+	@$(call print, "Compiling btcwallet to WebAssembly.")
+	$(GOBUILD)
+
 #? install: Install btcwallet, dropwtxmgr and sweepaccount, place them in $GOPATH/bin
 install:
 	@$(call print, "Installing btcwallet.")

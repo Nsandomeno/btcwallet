@@ -14,10 +14,10 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/btcutil/psbt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/rpcclient"
@@ -135,6 +135,7 @@ var rpcHandlers = map[string]struct {
 	"listalltransactions":     {handler: listAllTransactions},
 	"renameaccount":           {handler: renameAccount},
 	"walletislocked":          {handler: walletIsLocked},
+	"walletcreatefundedpsbt":  {handler: walletCreateFundedPsbt},
 }
 
 // unimplemented handles an unimplemented RPC request with the
@@ -1950,4 +1951,120 @@ func decodeHexStr(hexStr string) ([]byte, error) {
 		}
 	}
 	return decoded, nil
+}
+
+type CreatePbstRequest struct {
+	Amount 	float64
+	ToAddr  string
+}
+// TODO model the error responses from other methods above.
+
+// walletCreateFundedPsbt maps to bitcoind equivalent.
+func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
+	// TODO add these hard coded constants and implement cmd interface
+	var mvpBlankInputs = []psbt.PInput{}
+	var mvpSatsPerVByte = btcutil.Amount(1)
+
+	//cmd := icmd.(*btcjson.WalletCreateFundedPsbtCmd)
+	cmd := icmd.(*CreatePbstRequest)
+
+	// begin creating psbt
+	var txInTotalAmt = 0
+	var txIn  = []*wire.TxIn{}
+	var txOut = []*wire.TxOut{}
+	// list unspent outputs, to gather input data to cover the
+	// passed amount. TODO what is the proper way to specify maxConfirmations
+	unspentUtxos, err := w.ListUnspent(6, 9999999, "default")
+	if err != nil {
+		return nil, err
+	}
+	for _, utxo := range unspentUtxos {
+		if txInTotalAmt >= int(cmd.Amount) {
+			// we have collected enough inputs to cover the amount
+			break
+		}
+		// get the txid to hash
+		txid, err := chainhash.NewHashFromStr(utxo.TxID)
+		if err != nil {
+			return nil, err
+		}
+		// add utxo info to txIn
+		txIn = append(txIn, &wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{
+				Hash:  *txid,
+				Index: utxo.Vout,
+			},
+			Sequence: wire.MaxTxInSequenceNum,
+		})
+		// add utxo amount to total
+		txInTotalAmt += int(utxo.Amount)
+	}
+	// confirm that the inputs analyzed cover the amount requested
+	if txInTotalAmt < int(cmd.Amount) {
+		return nil, errors.New("insufficient funds")
+	}
+	// now create an output based on the address received
+
+	// METHOD #1
+	decodedAddr, err := btcutil.DecodeAddress(cmd.ToAddr, w.ChainParams())
+	if err != nil {
+		return nil, err
+	}
+	scriptAddr := decodedAddr.ScriptAddress()
+	// convert btc amount to satoshis TODO confirm this
+	satsValue, err := btcutil.NewAmount(cmd.Amount)
+	if err != nil {
+		return nil, err
+	}
+	// create the txout
+	txOut = append(txOut, &wire.TxOut{
+		Value:    int64(satsValue),
+		PkScript: scriptAddr,
+	})
+	// METHOD #2
+	// pubkeyScript, err := txscript.PayToAddrScript(decodedAddr)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// create psbt packet
+	packet := psbt.Packet{
+		UnsignedTx: &wire.MsgTx{
+			Version: 1, // TODO confirm this
+			TxIn: txIn,
+			TxOut: txOut,
+			LockTime: 0,
+		},
+		Inputs: mvpBlankInputs,
+		Outputs: []psbt.POutput{},
+	}
+	// packet has been modified for required content
+	changeIdx, err := w.FundPsbt(&packet, nil, 0, 0, mvpSatsPerVByte, nil)
+	if err != nil {
+		return nil, err
+	}
+	// perform some checks on the psbt
+	psbtComplete := packet.IsComplete()
+	psbtErr := packet.SanityCheck()
+
+	if !psbtComplete || psbtErr != nil {
+		return nil, errors.New("psbt is not complete")
+	}
+	// format psbt for result
+	// var psbtSerialized bytes.Buffer
+	// err = packet.Serialize(&psbtSerialized)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	psbtStr, err := packet.B64Encode()
+	if err != nil {
+		return nil, err
+	}
+	// return result
+	var result = btcjson.WalletCreateFundedPsbtResult{
+		Psbt:      psbtStr,  // TODO where does the string representation come from?
+		Fee:       float64(mvpSatsPerVByte),
+		ChangePos: int64(changeIdx), // TODO confirm this assignment
+	}
+	// TODO create response interface for psbt.Packet or just the fields we need
+	return result, nil
 }
