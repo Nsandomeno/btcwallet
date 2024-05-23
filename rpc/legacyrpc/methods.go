@@ -1964,27 +1964,15 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 	// TODO add these hard coded constants and implement cmd interface
 	var mvpBlankInputs = []psbt.PInput{}
 	var mvpSatsPerVByte = btcutil.Amount(1)
-
-	//cmd := icmd.(*btcjson.WalletCreateFundedPsbtCmd)
-	cmd := icmd.(*CreatePbstRequest)
-
-	// begin creating psbt
-	var txInTotalAmt = 0
+	// get the request payload
+	cmd := icmd.(*btcjson.WalletCreateFundedPsbtCmd)
+	// create psbt packet
 	var txIn  = []*wire.TxIn{}
 	var txOut = []*wire.TxOut{}
-	// list unspent outputs, to gather input data to cover the
-	// passed amount. TODO what is the proper way to specify maxConfirmations
-	unspentUtxos, err := w.ListUnspent(6, 9999999, "default")
-	if err != nil {
-		return nil, err
-	}
-	for _, utxo := range unspentUtxos {
-		if txInTotalAmt >= int(cmd.Amount) {
-			// we have collected enough inputs to cover the amount
-			break
-		}
+	// map btcjson.PsbtInputs to wire.TxIn for the packet
+	for _, utxo := range cmd.Inputs {
 		// get the txid to hash
-		txid, err := chainhash.NewHashFromStr(utxo.TxID)
+		txid, err := chainhash.NewHashFromStr(utxo.Txid)
 		if err != nil {
 			return nil, err
 		}
@@ -1996,36 +1984,52 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 			},
 			Sequence: wire.MaxTxInSequenceNum,
 		})
-		// add utxo amount to total
-		txInTotalAmt += int(utxo.Amount)
-	}
-	// confirm that the inputs analyzed cover the amount requested
-	if txInTotalAmt < int(cmd.Amount) {
-		return nil, errors.New("insufficient funds")
 	}
 	// now create an output based on the address received
 
+	// TODO currently accepting only one output for the psbt... a change output
+	// will be added in the underlying call.
+	if len(cmd.Outputs) > 1 {
+		return nil, errors.New("only one output is supported")
+	}
+	// iterate over the outputs (there should currently only be one)
+	// the address is the key, and the amount in BTC is the value
+	var addr   string
+	var amount float64
+
+	for _, output := range cmd.Outputs {
+		for key, val := range output {
+			// ensure that val is a float64 
+			fmtVal := val.(float64)
+
+			addr = key
+			amount = fmtVal
+		}
+	}
 	// METHOD #1
-	decodedAddr, err := btcutil.DecodeAddress(cmd.ToAddr, w.ChainParams())
+	decodedAddr, err := btcutil.DecodeAddress(addr, w.ChainParams())
 	if err != nil {
 		return nil, err
 	}
 	scriptAddr := decodedAddr.ScriptAddress()
 	// convert btc amount to satoshis TODO confirm this
-	satsValue, err := btcutil.NewAmount(cmd.Amount)
+	satsValue, err := btcutil.NewAmount(amount)
 	if err != nil {
 		return nil, err
 	}
+
 	// create the txout
 	txOut = append(txOut, &wire.TxOut{
 		Value:    int64(satsValue),
 		PkScript: scriptAddr,
 	})
+
 	// METHOD #2
 	// pubkeyScript, err := txscript.PayToAddrScript(decodedAddr)
 	// if err != nil {
 	// 	return nil, err
 	// }
+
 	// create psbt packet
 	packet := psbt.Packet{
 		UnsignedTx: &wire.MsgTx{
