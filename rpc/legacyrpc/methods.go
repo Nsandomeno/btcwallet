@@ -1962,7 +1962,7 @@ type CreatePbstRequest struct {
 // walletCreateFundedPsbt maps to bitcoind equivalent.
 func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	// TODO add these hard coded constants and implement cmd interface
-	var mvpBlankInputs = []psbt.PInput{}
+	//var mvpBlankInputs = []psbt.PInput{}
 	var mvpSatsPerVByte = btcutil.Amount(1)
 	// get the request payload
 	cmd := icmd.(*btcjson.WalletCreateFundedPsbtCmd)
@@ -1972,14 +1972,16 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 	// map btcjson.PsbtInputs to wire.TxIn for the packet
 	for _, utxo := range cmd.Inputs {
 		// get the txid to hash
-		txid, err := chainhash.NewHashFromStr(utxo.Txid)
+		var txid chainhash.Hash
+		err := chainhash.Decode(&txid, utxo.Txid)
+		
 		if err != nil {
 			return nil, err
 		}
 		// add utxo info to txIn
 		txIn = append(txIn, &wire.TxIn{
 			PreviousOutPoint: wire.OutPoint{
-				Hash:  *txid,
+				Hash:  txid,
 				Index: utxo.Vout,
 			},
 			Sequence: wire.MaxTxInSequenceNum,
@@ -2024,12 +2026,86 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 		PkScript: scriptAddr,
 	})
 
-	// METHOD #2
-	// pubkeyScript, err := txscript.PayToAddrScript(decodedAddr)
-	// if err != nil {
-	// 	return nil, err
+	// tx message template
+	// var tx = &wire.MsgTx{
+	// 	Version: 1,
+	// 	LockTime: 0,
 	// }
 
+	// // TODO map inputs to psbt.PInput for the psbt.Packet
+	var partialInputs []psbt.PInput
+	// TODO what is a better way to create wire.TxOut from btcjson.PsbtInputs?
+	utxoResult, err := w.ListUnspent(6, 9999999, "default")
+	if err != nil {
+		return nil, err
+	}
+	// iterate over the passed inputs and match to a utxo to get more data about it
+	for _, utxo := range cmd.Inputs {
+		// get the txid to hash
+		// txid, err := chainhash.NewHashFromStr(utxo.TxID)
+		// if err != nil {
+		// 	return nil, err
+		// }
+
+		// find additional data about the utxo
+		for _, utxoMeta := range utxoResult {
+			if utxoMeta.TxID == utxo.Txid && utxoMeta.Vout == utxo.Vout {
+				// cover btc amount to sats
+				// sats, err := btcutil.NewAmount(utxoMeta.Amount)
+				// if err != nil {
+				// 	return nil, err
+				// }
+				// create a wire.TxOut
+				// txOut := &wire.TxOut{
+				// 	Value:    int64(sats),
+				// 	PkScript: []byte(utxoMeta.ScriptPubKey),
+				// }
+				// outpoint hash
+				var hash chainhash.Hash
+				//hash, err := chainhash.NewHashFromStr(utxoMeta.TxID)
+				err = chainhash.Decode(&hash, utxo.Txid)
+				if err != nil {
+					return nil, err
+				}
+				var inputs []*wire.TxIn
+				// create the txin
+				inputs = append(inputs, &wire.TxIn{
+					PreviousOutPoint: wire.OutPoint{
+						Hash:  hash,
+						Index: utxoMeta.Vout,
+					},
+					Sequence: wire.MaxTxInSequenceNum,
+				})
+				// create the psbt.PInput
+				pInput := psbt.PInput{
+					// TODO try WitnessUtxo instead of NonWitnessUtxo
+					NonWitnessUtxo: &wire.MsgTx{
+						Version: 1,
+						TxIn: inputs,
+						TxOut: []*wire.TxOut{},
+						LockTime: 0,
+					},
+				}
+				// add the pInput to the partialInputs
+				partialInputs = append(partialInputs, pInput)
+			}
+		
+		}
+	}
+	// TODO map outputs to psbt.POutput for the psbt.Packet
+	var partialOutputs []psbt.POutput
+	// METHOD #2
+	pubkeyScript, err := txscript.PayToAddrScript(decodedAddr)
+	if err != nil {
+		return nil, err
+	}
+	// create psbt.POutput
+	//pOutput := psbt.NewPsbtOutput(pubkeyScript, nil, nil)
+	pOutput := psbt.POutput{
+		RedeemScript: pubkeyScript,
+	}
+
+	partialOutputs = append(partialOutputs, pOutput)
 	// create psbt packet
 	packet := psbt.Packet{
 		UnsignedTx: &wire.MsgTx{
@@ -2038,9 +2114,10 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 			TxOut: txOut,
 			LockTime: 0,
 		},
-		Inputs: mvpBlankInputs,
-		Outputs: []psbt.POutput{},
+		Inputs: partialInputs,
+		Outputs: partialOutputs,
 	}
+	
 	// packet has been modified for required content
 	changeIdx, err := w.FundPsbt(&packet, nil, 0, 0, mvpSatsPerVByte, nil)
 	if err != nil {

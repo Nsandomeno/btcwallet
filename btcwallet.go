@@ -96,6 +96,7 @@ func walletMain() error {
 		// or this will return an appropriate error.
 		_, err = loader.OpenExistingWallet([]byte(cfg.WalletPass), true)
 		if err != nil {
+			log.Error("is this rebuilding??")
 			log.Error(err)
 			return err
 		}
