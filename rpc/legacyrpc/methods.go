@@ -1974,7 +1974,7 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 		// get the txid to hash
 		var txid chainhash.Hash
 		err := chainhash.Decode(&txid, utxo.Txid)
-		
+
 		if err != nil {
 			return nil, err
 		}
@@ -1997,12 +1997,12 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 	// iterate over the outputs (there should currently only be one)
 	// the address is the key, and the amount in BTC is the value
 	var addr   string
-	var amount float64
+	var amount int64
 
 	for _, output := range cmd.Outputs {
 		for key, val := range output {
 			// ensure that val is a float64 
-			fmtVal := val.(float64)
+			fmtVal := val.(int64)
 
 			addr = key
 			amount = fmtVal
@@ -2015,14 +2015,14 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 	}
 	scriptAddr := decodedAddr.ScriptAddress()
 	// convert btc amount to satoshis TODO confirm this
-	satsValue, err := btcutil.NewAmount(amount)
-	if err != nil {
-		return nil, err
-	}
+	// satsValue, err := btcutil.NewAmount(amount)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	// create the txout
 	txOut = append(txOut, &wire.TxOut{
-		Value:    int64(satsValue),
+		Value:    amount,
 		PkScript: scriptAddr,
 	})
 
@@ -2035,7 +2035,7 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 	// // TODO map inputs to psbt.PInput for the psbt.Packet
 	var partialInputs []psbt.PInput
 	// TODO what is a better way to create wire.TxOut from btcjson.PsbtInputs?
-	utxoResult, err := w.ListUnspent(6, 9999999, "default")
+	utxoResult, err := w.ListUnspent(0, 9999999, "default")
 	if err != nil {
 		return nil, err
 	}
@@ -2067,29 +2067,34 @@ func walletCreateFundedPsbt(icmd interface{}, w *wallet.Wallet) (interface{}, er
 				if err != nil {
 					return nil, err
 				}
-				var inputs []*wire.TxIn
+				//var inputs []*wire.TxIn
+
 				// create the txin
-				inputs = append(inputs, &wire.TxIn{
-					PreviousOutPoint: wire.OutPoint{
-						Hash:  hash,
-						Index: utxoMeta.Vout,
-					},
-					Sequence: wire.MaxTxInSequenceNum,
-				})
+				// inputs = append(inputs, &wire.TxIn{
+				// 	PreviousOutPoint: wire.OutPoint{
+				// 		Hash:  hash,
+				// 		Index: utxoMeta.Vout,
+				// 	},
+				// 	Sequence: wire.MaxTxInSequenceNum,
+				// })
+
 				// create the psbt.PInput
+				// pInput := psbt.PInput{
+				// 	// TODO try WitnessUtxo instead of NonWitnessUtxo
+				// 	NonWitnessUtxo: &wire.MsgTx{
+				// 		Version: 1,
+				// 		TxIn: inputs,
+				// 		TxOut: []*wire.TxOut{},
+				// 		LockTime: 0,
+				// 	},
+				// }
+
 				pInput := psbt.PInput{
-					// TODO try WitnessUtxo instead of NonWitnessUtxo
-					NonWitnessUtxo: &wire.MsgTx{
-						Version: 1,
-						TxIn: inputs,
-						TxOut: []*wire.TxOut{},
-						LockTime: 0,
-					},
+					RedeemScript: []byte(utxoMeta.ScriptPubKey),
 				}
 				// add the pInput to the partialInputs
 				partialInputs = append(partialInputs, pInput)
 			}
-		
 		}
 	}
 	// TODO map outputs to psbt.POutput for the psbt.Packet
